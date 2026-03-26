@@ -1,0 +1,169 @@
+import threading
+from socket import *
+from customtkinter import *
+from PIL import Image, ImageTk
+from tkinter import filedialog, Text
+
+class MainWindow(CTk):
+    def __init__(self):
+        super().__init__()
+        self.geometry("600x500")
+        self.title("")
+        self.images = []
+
+        # кнопка ✔
+        self.tick_image = CTkImage(Image.open("tick.png"), size=(20, 20))
+
+        # меню вліво
+        self.menu_frame = CTkFrame(self, width=30)
+        self.menu_frame.place(x=0, y=0, relheight=1)
+        self.is_show_menu = False
+        self.speed_animate_menu = -5
+
+        # кнопка стрілки
+        self.btn = CTkButton(self, text="▶️", width=30, command=self.toggle_show_menu)
+        self.btn.place(x=0, y=0)
+
+        # поле вводу тексту
+        self.message_entry = CTkEntry(self, placeholder_text="Введіть повідомлення:", height=40)
+        self.message_entry.place(x=30, rely=0.9, relwidth=0.7)
+        self.message_entry.bind("<Return>", self.send_message_enter)
+
+        # кнопка картинки
+        self.image_button = CTkButton(self, text="🖼", width=40, command=self.send_image)
+        self.image_button.place(relx=0.78, rely=0.9)
+
+        # кнопка відправки
+        self.send_button = CTkButton(self, text="", image=self.tick_image, width=50, command=self.send_message)
+        self.send_button.place(relx=0.86, rely=0.9)
+
+        # чат
+        self.chat_field = Text(self, font=("Arial", 14))
+        self.chat_field.place(x=30, y=0, relwidth=0.95, relheight=0.9)
+
+        # імʼя користувача
+        self.username = ""
+
+        # підключення до сервера
+        try:
+            self.sock = socket(AF_INET, SOCK_STREAM)
+            self.sock.connect(("4.tcp.eu.ngrok.io", 19500))
+            threading.Thread(target=self.recv_message, daemon=True).start()
+        except Exception as e:
+            self.add_message(f"Не вдалося підключитися до сервера: {e}")
+
+    # меню ніка
+    def toggle_show_menu(self):
+        if self.is_show_menu:
+            self.is_show_menu = False
+            self.speed_animate_menu *= -1
+            self.btn.configure(text="▶️")
+            self.hide_menu()
+        else:
+            self.is_show_menu = True
+            self.speed_animate_menu *= -1
+            self.btn.configure(text="◀️")
+            self.show_menu()
+            # створення віджетів у меню
+            self.nick_label = CTkLabel(self.menu_frame, text="Введіть нік:")
+            self.nick_label.pack(pady=30)
+            self.nick_entry = CTkEntry(self.menu_frame)
+            self.nick_entry.pack()
+            self.nick_entry.bind("<Return>", self.set_username)
+
+    def show_menu(self):
+        self.menu_frame.configure(width=self.menu_frame.winfo_width() + self.speed_animate_menu)
+        if self.menu_frame.winfo_width() < 200 and self.is_show_menu:
+            self.after(10, self.show_menu)
+
+    def hide_menu(self):
+        self.menu_frame.configure(width=self.menu_frame.winfo_width() + self.speed_animate_menu)
+        if self.menu_frame.winfo_width() > 30 and not self.is_show_menu:
+            self.after(10, self.hide_menu)
+        else:
+            if hasattr(self, "nick_label"):
+                self.nick_label.destroy()
+                self.nick_entry.destroy()
+
+    # встановлення ніку
+    def set_username(self, event):
+        self.username = self.nick_entry.get().strip()
+        if self.username == "":
+            self.username = "User"
+        self.add_message(f"[SYSTEM] Ваш нік: {self.username}")
+        # закриваємо меню
+        self.toggle_show_menu()
+
+    # відправка тексту
+    def send_message(self):
+        if not self.username:
+            self.add_message("[SYSTEM] Спочатку введіть нік!")
+            return
+        message = self.message_entry.get()
+        if message:
+            self.add_message(f"{self.username}: {message}")
+            try:
+                self.sock.sendall(f"TEXT@{self.username}@{message}\n".encode())
+            except:
+                pass
+        self.message_entry.delete(0, END)
+
+    def send_message_enter(self, event):
+        self.send_message()
+
+    # відправка картинки
+    def send_image(self):
+        if not self.username:
+            self.add_message("[SYSTEM] Спочатку введіть нік!")
+            return
+        file_path = filedialog.askopenfilename(filetypes=[("Images", "*.png *.jpg *.jpeg *.gif")])
+        if not file_path:
+            return
+        img = Image.open(file_path)
+        img.thumbnail((200, 200))
+        photo = ImageTk.PhotoImage(img)
+        self.images.append(photo)
+        self.chat_field.insert("end", f"{self.username} надіслав(ла) зображення:\n")
+        self.chat_field.image_create("end", image=photo)
+        self.chat_field.insert("end", "\n\n")
+        self.chat_field.see("end")
+        try:
+            filename = file_path.split("/")[-1]
+            self.sock.sendall(f"IMAGE@{self.username}@{filename}\n".encode())
+        except:
+            pass
+
+    def add_message(self, text):
+        self.chat_field.insert("end", text + "\n")
+        self.chat_field.see("end")
+
+    # отримання повідомлень з сервера
+    def recv_message(self):
+        buffer = ""
+        while True:
+            try:
+                chunk = self.sock.recv(4096)
+                if not chunk:
+                    break
+                buffer += chunk.decode()
+                while "\n" in buffer:
+                    line, buffer = buffer.split("\n", 1)
+                    self.handle_line(line.strip())
+            except:
+                break
+        self.sock.close()
+
+    def handle_line(self, line):
+        if not line:
+            return
+        parts = line.split("@", 2)
+        msg_type = parts[0]
+        if msg_type == "TEXT" and len(parts) >= 3:
+            author, message = parts[1], parts[2]
+            self.add_message(f"{author}: {message}")
+        elif msg_type == "IMAGE" and len(parts) >= 3:
+            author, filename = parts[1], parts[2]
+            self.add_message(f"{author} надіслав(ла) зображення: {filename}")
+
+win = MainWindow()
+win.mainloop()
